@@ -4,6 +4,7 @@
  */
 
 #include <linux/cpufreq.h>
+#include <linux/fie.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
@@ -145,20 +146,14 @@ static unsigned long limits_mitigation_notify(struct cpufreq_qcom *c,
 	struct cpufreq_policy *policy;
 	u32 cpu;
 	unsigned long freq;
-	unsigned long max_capacity, capacity;
 
 	cpu = cpumask_first(&c->related_cpus);
 	policy = cpufreq_cpu_get_raw(cpu);
-	capacity = max_capacity = arch_scale_cpu_capacity(cpu);
 
 	if (limit) {
 		freq = readl_relaxed(c->reg_bases[REG_DOMAIN_STATE]) &
 				GENMASK(7, 0);
 		freq = DIV_ROUND_CLOSEST_ULL(freq * c->xo_rate, 1000);
-		if (policy) {
-			capacity = freq * max_capacity;
-			capacity /= policy->cpuinfo.max_freq;
-		}
 	} else {
 		if (!policy)
 			freq = U32_MAX;
@@ -166,8 +161,8 @@ static unsigned long limits_mitigation_notify(struct cpufreq_qcom *c,
 			freq = policy->cpuinfo.max_freq;
 	}
 
-	arch_set_thermal_pressure(&c->related_cpus, max_t(unsigned long, 0,
-				  max_capacity - capacity));
+	fie_cpufreq_pressure(cpu, limit && policy &&
+			     freq < policy->cpuinfo.max_freq ? freq : UINT_MAX);
 	trace_dcvsh_freq(cpumask_first(&c->related_cpus), freq);
 	c->dcvsh_freq_limit = freq;
 
@@ -302,16 +297,23 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 {
 	struct cpufreq_qcom *c = policy->driver_data;
 	unsigned long flags;
+	unsigned int target_index = index;
 
 	if (c->skip_data.skip && index == c->skip_data.high_temp_index) {
+		target_index = c->skip_data.final_index;
 		spin_lock_irqsave(&c->skip_data.lock, flags);
-		writel_relaxed(c->skip_data.final_index,
+		writel_relaxed(target_index,
 				c->reg_bases[REG_PERF_STATE]);
+		fie_rate_set(policy->cpu,
+			     policy->freq_table[target_index].frequency);
 		spin_unlock_irqrestore(&c->skip_data.lock, flags);
 	} else {
-		writel_relaxed(index, c->reg_bases[REG_PERF_STATE]);
+		local_irq_save(flags);
+		writel_relaxed(target_index, c->reg_bases[REG_PERF_STATE]);
+		fie_rate_set(policy->cpu,
+			     policy->freq_table[target_index].frequency);
+		local_irq_restore(flags);
 	}
-
 
 	return 0;
 }
