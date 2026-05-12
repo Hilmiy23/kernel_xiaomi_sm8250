@@ -25,14 +25,6 @@
  */
 static u64 cpu_min_sample_cntpct __read_mostly = 3 * NSEC_PER_USEC;
 
-/* Max frequencies for SM8550 (kHz) */
-static const u64 max_freqs[] = {
-	2016000, 2016000, 2016000,	/* Cores 0-2 (Silver/LITTLE) */
-	2803200, 2803200,		/* Cores 3-4 (Gold/Big) */
-	2803200, 2803200,		/* Cores 5-6 (Gold+/Big) */
-	3187200				/* Core 7 (Prime) */
-};
-
 /*
  * The maximum amount of time allowed for a CPU frequency ramp up to latch
  * before reporting the entire CPU domain as throttled to the scheduler. This
@@ -162,7 +154,6 @@ struct throt_data {
 
 static DEFINE_PER_CPU_READ_MOSTLY(struct throt_data *, domain_throt_data);
 static LIST_HEAD(domain_throt_list);
-
 static DEFINE_STATIC_KEY_FALSE(fie_ready);
 static int cpuhp_state;
 
@@ -730,7 +721,7 @@ static void update_freq_scale(int cpu, struct rq *rq, bool local_cpu)
 	 */
 	if (rq->cpu == cpu) {
 		if (sfd->const_cyc >= cpu_min_sample_cntpct) {
-			u64 max_freq = max_freqs[cpu];
+			u64 max_freq = per_cpu(cpu_max_freq, cpu);
 			u64 freq, ns = cntpct_to_ns(sfd->const_cyc);
 
 			/* Report the measured frequency and reset the stats */

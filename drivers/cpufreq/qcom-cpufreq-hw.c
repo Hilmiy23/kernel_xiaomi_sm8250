@@ -357,7 +357,8 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
 	struct em_data_callback em_cb = EM_DATA_CB(of_dev_pm_opp_get_cpu_power);
 	struct cpufreq_qcom *c;
 	struct device *cpu_dev;
-	int ret;
+	unsigned int max_freq = 0;
+	int i, ret;
 
 	cpu_dev = get_cpu_device(policy->cpu);
 	if (!cpu_dev) {
@@ -378,8 +379,17 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
 	if (ret <= 0)
 		dev_err(cpu_dev, "OPP table is not ready\n");
 
-	policy->fast_switch_possible = true;
 	policy->freq_table = c->table;
+	for (i = 0; policy->freq_table[i].frequency != CPUFREQ_TABLE_END; i++) {
+		if (policy->freq_table[i].frequency != CPUFREQ_ENTRY_INVALID &&
+		    policy->freq_table[i].frequency > max_freq)
+			max_freq = policy->freq_table[i].frequency;
+	}
+	if (!max_freq)
+		return -EINVAL;
+
+	fie_init_cpu_domain(policy->cpus, max_freq);
+	policy->fast_switch_possible = true;
 	policy->driver_data = c;
 	policy->dvfs_possible_from_any_cpu = true;
 
