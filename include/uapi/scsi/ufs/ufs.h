@@ -20,6 +20,9 @@ enum flag_idn {
 	QUERY_FLAG_IDN_WB_EN                            = 0x0E,
 	QUERY_FLAG_IDN_WB_BUFF_FLUSH_EN                 = 0x0F,
 	QUERY_FLAG_IDN_WB_BUFF_FLUSH_DURING_HIBERN8     = 0x10,
+#ifdef CONFIG_SCSI_SKHPB
+	QUERY_FLAG_IDN_HPB_RESET                        = 0x11,
+#endif
 };
 
 /* Attribute idn for Query requests */

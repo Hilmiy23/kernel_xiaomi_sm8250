@@ -137,11 +137,11 @@ enum desc_header_offset {
 };
 
 enum ufs_desc_def_size {
-	QUERY_DESC_DEVICE_DEF_SIZE		= 0x59,
-	QUERY_DESC_CONFIGURATION_DEF_SIZE	= 0x90,
+	QUERY_DESC_DEVICE_DEF_SIZE		= 0x5F,
+	QUERY_DESC_CONFIGURATION_DEF_SIZE	= 0xE6,
 	QUERY_DESC_UNIT_DEF_SIZE		= 0x23,
 	QUERY_DESC_INTERCONNECT_DEF_SIZE	= 0x06,
-	QUERY_DESC_GEOMETRY_DEF_SIZE		= 0x48,
+	QUERY_DESC_GEOMETRY_DEF_SIZE		= 0x59,
 	QUERY_DESC_POWER_DEF_SIZE		= 0x62,
 	QUERY_DESC_HEALTH_DEF_SIZE		= 0x25,
 };
@@ -166,6 +166,11 @@ enum unit_desc_param {
 	UNIT_DESC_PARAM_CTX_CAPABILITIES	= 0x20,
 	UNIT_DESC_PARAM_LARGE_UNIT_SIZE_M1	= 0x22,
 	UNIT_DESC_PARAM_WB_BUF_ALLOC_UNITS	= 0x29,
+#ifdef CONFIG_SCSI_SKHPB
+	UNIT_DESC_HPB_LU_MAX_ACTIVE_REGIONS             = 0x23,
+	UNIT_DESC_HPB_LU_PIN_REGION_START_OFFSET        = 0x25,
+	UNIT_DESC_HPB_LU_NUM_PIN_REGIONS                = 0x27,
+#endif
 };
 
 /* Device descriptor parameters offsets in bytes*/
@@ -209,6 +214,10 @@ enum device_desc_param {
 	DEVICE_DESC_PARAM_WB_US_RED_EN		= 0x53,
 	DEVICE_DESC_PARAM_WB_TYPE		= 0x54,
 	DEVICE_DESC_PARAM_WB_SHARED_ALLOC_UNITS = 0x55,
+#ifdef CONFIG_SCSI_SKHPB
+	DEVICE_DESC_PARAM_HPB_VER               = 0x40,
+	DEVICE_DESC_PARAM_HPB_CONTROL           = 0x42,
+#endif
 };
 
 /* Interconnect descriptor parameters offsets in bytes*/
@@ -258,6 +267,12 @@ enum geometry_desc_param {
 	GEOMETRY_DESC_PARAM_WB_BUFF_CAP_ADJ	= 0x54,
 	GEOMETRY_DESC_PARAM_WB_SUP_RED_TYPE	= 0x55,
 	GEOMETRY_DESC_PARAM_WB_SUP_WB_TYPE	= 0x56,
+#ifdef CONFIG_SCSI_SKHPB
+	GEOMETRY_DESC_HPB_REGION_SIZE                   = 0x48,
+	GEOMETRY_DESC_HPB_NUMBER_LU                     = 0x49,
+	GEOMETRY_DESC_HPB_SUBREGION_SIZE                = 0x4A,
+	GEOMETRY_DESC_HPB_DEVICE_MAX_ACTIVE_REGIONS     = 0x4B,
+#endif
 };
 
 /* Health descriptor parameters offsets in bytes*/
@@ -366,6 +381,9 @@ enum {
 	MASK_RSP_UPIU_DATA_SEG_LEN	= 0xFFFF,
 	MASK_RSP_EXCEPTION_EVENT        = 0x10000,
 	MASK_TM_SERVICE_RESP		= 0xFF,
+#ifdef CONFIG_SCSI_SKHPB
+	MASK_RSP_UPIU_HPB_UPDATE_ALERT		= 0x20000,
+#endif
 };
 
 /* Task management service response */
@@ -628,11 +646,11 @@ struct ufs_dev_info {
 /**
  * ufs_dev_desc - ufs device details from the device descriptor
  *
- * @wmanufacturerid: card details
+ * @w_manufacturer_id: card details
  * @model: card model
  */
 struct ufs_dev_desc {
-	u16 wmanufacturerid;
+	u16 w_manufacturer_id;
 	char model[MAX_MODEL_LEN + 1];
 	u16 wspecversion;
 };
