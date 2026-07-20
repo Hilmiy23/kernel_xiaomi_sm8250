@@ -263,12 +263,12 @@ static inline skhpb_t skhpb_get_ppn(struct skhpb_map_ctx *mctx, int pos)
 
 
 #if defined(SKHPB_READ_LARGE_CHUNK_SUPPORT)
-static bool skhpb_subregion_dirty_check(struct skhpb_lu *hpb, struct skhpb_subregion *cp,
-		int subregion_offset, int reqBlkCnt)
+static bool skhpb_subregion_dirty_check(
+		struct skhpb_lu *hpb, struct skhpb_subregion *cp,
+		int subregion_offset, int req_blk_cnt)
 {
 	unsigned int bit_dword, bit_offset;
-	unsigned int tmp;
-	int checkCnt;
+	unsigned int bit_count, mask;
 
 	if (!cp->mctx)
 		return true;
@@ -279,21 +279,18 @@ static bool skhpb_subregion_dirty_check(struct skhpb_lu *hpb, struct skhpb_subre
 	skhpb_get_bit_offset(hpb, subregion_offset,
 			&bit_dword, &bit_offset);
 
-	while (true) {
-		checkCnt = SKHPB_BITS_PER_DWORD - bit_offset;
-		if (cp->mctx->ppn_dirty[bit_dword]) {
-			tmp = cp->mctx->ppn_dirty[bit_dword] << bit_offset;
-			if (SKHPB_BITS_PER_DWORD - reqBlkCnt > 0)
-				tmp = tmp >> (SKHPB_BITS_PER_DWORD - reqBlkCnt);
-			if (tmp)
-				return true;
-		}
-		reqBlkCnt -= checkCnt;
-		if (reqBlkCnt <= 0)
+	while (req_blk_cnt) {
+		bit_count = min_t(unsigned int, req_blk_cnt,
+				SKHPB_BITS_PER_DWORD - bit_offset);
+		mask = bit_count == SKHPB_BITS_PER_DWORD ?
+			~0U : ((1U << bit_count) - 1) << bit_offset;
+		if (cp->mctx->ppn_dirty[bit_dword] & mask)
+			return true;
+
+		req_blk_cnt -= bit_count;
+		if (!req_blk_cnt)
 			break;
 		bit_dword++;
-		if (bit_dword >= hpb->ppn_dirties_per_subregion)
-			break;
 		bit_offset = 0;
 	}
 	return false;
@@ -307,9 +304,11 @@ static bool skhpb_lc_dirty_check(struct skhpb_lu *hpb, unsigned int lpn, unsigne
 	struct skhpb_subregion *cp;
 	unsigned long cur_lpn = lpn;
 	int subRegOffset;
-	int reqBlkCnt = rq_sectors >> skhpb_sects_per_blk_shift;
+	int req_blk_cnt = rq_sectors >> skhpb_sects_per_blk_shift;
 
 	do {
+		int blocks_in_subregion;
+
 		skhpb_get_pos_from_lpn(hpb, cur_lpn, &reg, &subReg, &subRegOffset);
 		if (!skhpb_check_region_subregion_validity(hpb, reg, subReg))
 			return true;
@@ -322,20 +321,18 @@ static bool skhpb_lc_dirty_check(struct skhpb_lu *hpb, unsigned int lpn, unsigne
 			return true;
 		}
 
-		if (skhpb_subregion_dirty_check(hpb, cp, subRegOffset, reqBlkCnt)) {
+		blocks_in_subregion = min(req_blk_cnt,
+				hpb->entries_per_subregion - subRegOffset);
+		if (skhpb_subregion_dirty_check(hpb, cp, subRegOffset,
+				blocks_in_subregion)) {
 			//SKHPB_DRIVER_D("[NORMAL READ] DIRTY: Region(%d), SubRegion(%d) \n", reg, subReg);
 			atomic64_inc(&hpb->lc_entry_dirty_miss);
 			return true;
 		}
 
-		if (hpb->entries_per_subregion < subRegOffset + reqBlkCnt) {
-			reqBlkCnt -= (hpb->entries_per_subregion - subRegOffset);
-		} else {
-			reqBlkCnt = 0;
-		}
-
-		cur_lpn += reqBlkCnt;
-	} while(reqBlkCnt);
+		cur_lpn += blocks_in_subregion;
+		req_blk_cnt -= blocks_in_subregion;
+	} while (req_blk_cnt);
 
 	return false;
 }
