@@ -68,6 +68,7 @@ static int skhpb_alloc_mctx;
 static int skhpb_sects_per_blk_shift;
 static int skhpb_bits_per_dword_shift;
 static int skhpb_bits_per_dword_mask;
+static int skhpb_entries_per_os_page_shift;
 
 static int skhpb_create_sysfs(struct ufs_hba *hba, struct skhpb_lu *hpb);
 static int skhpb_check_lru_evict(struct skhpb_lu *hpb, struct skhpb_region *cb);
@@ -119,28 +120,24 @@ static void skhpb_ppn_prep(struct skhpb_lu *hpb,
 		struct ufshcd_lrb *lrbp, skhpb_t ppn,
 		unsigned int sector_len)
 {
-	unsigned char cmd[16] = { 0 };
+	/*
+	 * Write the HPB CDB directly into the UPIU request buffer.
+	 * The SCSI midlayer's cmd->cmnd is already copied and zero-padded
+	 * by ufshcd_prepare_utp_scsi_cmd_upiu(), so we just overwrite
+	 * the fields that HPB needs, eliminating the temporary buffer
+	 * and the final memcpy(16) on every HPB hit.
+	 */
+	unsigned char *cdb = lrbp->ucd_req_ptr->sc.cdb;
 
 	if (hpb->hba->skhpb_quirk & SKHPB_QUIRK_USE_READ_16_FOR_ENCRYPTION)
-		cmd[0] = READ_16;
+		cdb[0] = READ_16;
 	else
-		cmd[0] = SKHPB_READ;
-	cmd[2] = lrbp->cmd->cmnd[2];
-	cmd[3] = lrbp->cmd->cmnd[3];
-	cmd[4] = lrbp->cmd->cmnd[4];
-	cmd[5] = lrbp->cmd->cmnd[5];
-	put_unaligned(ppn, (u64 *)&cmd[6]);
-	cmd[14] = (u8)(sector_len >> skhpb_sects_per_blk_shift);	//Transfer length
-	if (hpb->hba->skhpb_quirk & SKHPB_QUIRK_USE_READ_16_FOR_ENCRYPTION)
-		cmd[15] = 0x01; 					//Control
-	else
-		cmd[15] = 0x00; 					//Control
-
-	memcpy(lrbp->cmd->cmnd, cmd, MAX_CDB_SIZE);
-	memcpy(lrbp->ucd_req_ptr->sc.cdb, cmd, MAX_CDB_SIZE);
-
-	//To verify the values within READ command
-	/* SKHPB_DRIVER_HEXDUMP("[HPB] HPB READ ", 16, 1, cmd, sizeof(cmd), 1); */
+		cdb[0] = SKHPB_READ;
+	/* Byte 1 is reserved/obsolete, already zero from the memset above */
+	put_unaligned(ppn, (u64 *)&cdb[6]);
+	cdb[14] = (u8)(sector_len >> skhpb_sects_per_blk_shift);	/* Transfer length */
+	cdb[15] = (hpb->hba->skhpb_quirk & SKHPB_QUIRK_USE_READ_16_FOR_ENCRYPTION)
+		  ? 0x01 : 0x00;					/* Control */
 }
 
 static inline void skhpb_set_dirty_bits(struct skhpb_lu *hpb,
@@ -196,13 +193,6 @@ static void skhpb_set_dirty(struct skhpb_lu *hpb,
 	} while (count);
 }
 
-static inline bool skhpb_is_encrypted_lrbp(struct ufshcd_lrb *lrbp)
-{
-	/* To do 
-	 * UTRD_CRYPTO_ENABLE is not define at SM8350
-	*/
-	//return (lrbp->utr_descriptor_ptr->header.dword_0 & UTRD_CRYPTO_ENABLE);
-	return true;
 }
 
 static inline enum SKHPB_CMD skhpb_get_cmd(struct ufshcd_lrb *lrbp)
@@ -247,21 +237,18 @@ static inline bool skhpb_check_region_subregion_validity(struct skhpb_lu *hpb,
 	}
 	return true;
 }
-
-
 static inline skhpb_t skhpb_get_ppn(struct skhpb_map_ctx *mctx, int pos)
 {
 	skhpb_t *ppn_table;
 	int index, offset;
 
-	index = pos / SKHPB_ENTREIS_PER_OS_PAGE;
-	offset = pos % SKHPB_ENTREIS_PER_OS_PAGE;
+	/* SKHPB_ENTREIS_PER_OS_PAGE = PAGE_SIZE / 8, a power of 2 */
+	index = pos >> skhpb_entries_per_os_page_shift;
+	offset = pos & (SKHPB_ENTREIS_PER_OS_PAGE - 1);
 
 	ppn_table = page_address(mctx->m_page[index]);
 	return ppn_table[offset];
 }
-
-
 #if defined(SKHPB_READ_LARGE_CHUNK_SUPPORT)
 static bool skhpb_subregion_dirty_check(
 		struct skhpb_lu *hpb, struct skhpb_subregion *cp,
@@ -1118,8 +1105,6 @@ static int skhpb_check_lru_evict(struct skhpb_lu *hpb, struct skhpb_region *cb)
 		SKHPB_DRIVER_E("SKHPB memory allocation failed\n");
 		goto unlock_error;
 	}
-
-
 out:
 	spin_unlock_irqrestore(&hpb->hpb_lock, flags);
 	return 0;
@@ -1682,8 +1667,10 @@ static void skhpb_init_constant(void)
 	skhpb_bits_per_dword_mask = SKHPB_BITS_PER_DWORD - 1;
 	SKHPB_DRIVER_D("bits_per_dword %u shift %u mask 0x%X\n",
 		  SKHPB_BITS_PER_DWORD, skhpb_bits_per_dword_shift, skhpb_bits_per_dword_mask);
+	skhpb_entries_per_os_page_shift = ffs(SKHPB_ENTREIS_PER_OS_PAGE) - 1;
+	SKHPB_DRIVER_D("entries_per_os_page %u shift %u\n",
+		  SKHPB_ENTREIS_PER_OS_PAGE, skhpb_entries_per_os_page_shift);
 }
-
 static void skhpb_table_mempool_remove(struct skhpb_lu *hpb)
 {
 	struct skhpb_map_ctx *mctx, *next;
@@ -2251,8 +2238,6 @@ static int skhpb_read_dev_desc_support(struct ufs_hba *hba,
 		desc->hpb_control_mode = DEV_CTRL_MODE;
 	else
 		desc->hpb_control_mode = (u8)desc_buf[DEVICE_DESC_PARAM_HPB_CONTROL];
-
-
 	SKHPB_DRIVER_I("HPB Control Mode = %s",
 			(desc->hpb_control_mode)?"DEV MODE":"HOST MODE");
 	if (desc->hpb_control_mode == HOST_CTRL_MODE) {
@@ -2764,8 +2749,6 @@ static void skhpb_stat_init(struct skhpb_lu *hpb)
 	atomic64_set(&hpb->canceled_map_req, 0);
 	atomic64_set(&hpb->alloc_map_req_cnt, 0);
 }
-
-
 static ssize_t skhpb_sysfs_info_from_region_store(struct skhpb_lu *hpb,
 		const char *buf, size_t count)
 {
