@@ -193,8 +193,6 @@ static void skhpb_set_dirty(struct skhpb_lu *hpb,
 	} while (count);
 }
 
-}
-
 static inline enum SKHPB_CMD skhpb_get_cmd(struct ufshcd_lrb *lrbp)
 {
 	unsigned char cmd = lrbp->cmd->cmnd[0];
