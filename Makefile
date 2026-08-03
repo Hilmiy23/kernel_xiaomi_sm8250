@@ -692,7 +692,8 @@ KBUILD_AFLAGS   += -O3 -march=armv8.2-a+lse+crypto+dotprod
 KBUILD_LDFLAGS  += -O3 --plugin-opt=O3
 KBUILD_LDFLAGS  += -mllvm -regalloc-enable-advisor=release
 KBUILD_LDFLAGS  += -mllvm -enable-ml-inliner=release
-KBUILD_LDFLAGS  += -mllvm -ml-inliner-model-selector=default
+KBUILD_LDFLAGS  += -mllvm -ml-inliner-model-selector=arm64-mixed
+KBUILD_LDFLAGS  += -mllvm -ml-inliner-skip-policy=if-caller-not-cold
 else
 KBUILD_CFLAGS   += -O2
 KBUILD_AFLAGS   += -O2
