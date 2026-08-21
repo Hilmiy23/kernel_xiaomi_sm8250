@@ -246,14 +246,7 @@ void *lru_gen_eviction(struct page *page)
 	lruvec = mem_cgroup_lruvec(pgdat, memcg);
 	lrugen = &lruvec->lrugen;
 
-	/*
-	 * Upstream indexes WORKINGSET_REFAULT_BASE by page type because its
-	 * enum has separate _ANON and _FILE counters. 4.19 has a single
-	 * WORKINGSET_REFAULT, so "+ type" would spill file pages into the
-	 * adjacent WORKINGSET_ACTIVATE counter, which shrink_node() and
-	 * inactive_list_is_low() read back as refault-driven activations.
-	 */
-	mod_lruvec_state(lruvec, WORKINGSET_REFAULT, delta);
+	mod_lruvec_state(lruvec, WORKINGSET_REFAULT + type, delta);
 
 	min_seq = READ_ONCE(lrugen->min_seq[type]);
 	token = (min_seq << LRU_REFS_WIDTH) | refs;

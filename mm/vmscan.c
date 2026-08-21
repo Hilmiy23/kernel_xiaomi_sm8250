@@ -114,15 +114,6 @@ struct scan_control {
 	unsigned int memcgs_need_aging:1;
 	unsigned int memcgs_need_swapping:1;
 	unsigned int memcgs_avoid_swapping:1;
-
-	/*
-	 * Every memcg walked in this pass declined to scan even though it
-	 * still had reclaimable pages. Such a pass must not be fed to
-	 * vmpressure(): a sample with zero scanned pages is reported as 100%
-	 * pressure, which would make in-kernel consumers (Simple LMK) kill a
-	 * process even though nothing has actually failed to reclaim.
-	 */
-	unsigned int memcgs_deferred:1;
 #endif
 
 	/* Allocation order */
@@ -4155,30 +4146,12 @@ static bool sort_page(struct lruvec *lruvec, struct page *page, struct scan_cont
 
 	VM_BUG_ON_PAGE(gen >= MAX_NR_GENS, page);
 
-	/*
-	 * The classic LRU counts every page that shrink_inactive_list()
-	 * isolates, including the ones shrink_page_list() rejects and puts
-	 * back (referenced, locked, dirty, writeback, unevictable, ...).
-	 * MGLRU normally rotates those pages away in sort_page() without
-	 * touching sc->nr_scanned, so the scanned/reclaimed ratio that
-	 * vmpressure is built on collapses toward 1 and in-kernel pressure
-	 * consumers (Simple LMK) never see reclaim failing.
-	 *
-	 * Account for the pages that were rejected for a reason that is a
-	 * real reclaim outcome (unevictable, hot/protected, locked,
-	 * writeback, dirty). Pages that are merely ineligible for this
-	 * particular reclaim request (zone outside reclaim_idx, CMA) or
-	 * moved for bookkeeping (mis-classified shmem/anon) are left alone,
-	 * matching the classic path which never isolated them in the first
-	 * place.
-	 */
 	if (!page_evictable(page)) {
 		success = lru_gen_del_page(lruvec, page, true);
 		VM_BUG_ON_PAGE(!success, page);
 		SetPageUnevictable(page);
 		add_page_to_lru_list(page, lruvec);
 		__count_vm_events(UNEVICTABLE_PGCULLED, delta);
-		sc->nr_scanned += delta;
 		return true;
 	}
 
@@ -4203,7 +4176,6 @@ static bool sort_page(struct lruvec *lruvec, struct page *page, struct scan_cont
 
 		WRITE_ONCE(lrugen->protected[hist][type][tier - 1],
 			   lrugen->protected[hist][type][tier - 1] + delta);
-		sc->nr_scanned += delta;
 		return true;
 	}
 
@@ -4218,7 +4190,6 @@ static bool sort_page(struct lruvec *lruvec, struct page *page, struct scan_cont
 	    (type == LRU_GEN_FILE && PageDirty(page))) {
 		gen = page_inc_gen(lruvec, page, true);
 		list_move(&page->lru, &lrugen->lists[gen][type][zone]);
-		sc->nr_scanned += delta;
 		return true;
 	}
 
@@ -4229,10 +4200,6 @@ static bool isolate_page(struct lruvec *lruvec, struct page *page, struct scan_c
 {
 	bool success;
 
-	/*
-	 * Not counted in sc->nr_scanned: the classic path filters these out
-	 * with ISOLATE_UNMAPPED before shrink_page_list() ever sees them.
-	 */
 	if (!sc->may_unmap && page_mapped(page))
 		return false;
 
@@ -4242,17 +4209,9 @@ static bool isolate_page(struct lruvec *lruvec, struct page *page, struct scan_c
 			__count_vm_event(LRU_NO_WRITEPAGE);
 		if (!(sc->gfp_mask & __GFP_IO))
 			__count_vm_event(LRU_NO_GFP_IO);
-		/*
-		 * The classic path isolates these and only bails out in
-		 * shrink_page_list(), after bumping sc->nr_scanned. Keep the
-		 * pressure signal identical: reclaim really did look at this
-		 * page and really did fail to free it.
-		 */
-		sc->nr_scanned += hpage_nr_pages(page);
 		return false;
 	}
 
-	/* being freed by somebody else; nothing was reclaimed on our behalf */
 	if (!get_page_unless_zero(page))
 		return false;
 
@@ -4495,18 +4454,7 @@ retry:
 
 		/* retry pages that may have missed rotate_reclaimable_page() */
 		list_move(&page->lru, &clean);
-
-		/*
-		 * shrink_page_list() counts this page again on the retry, so
-		 * undo its accounting here. Saturate the subtraction: a page
-		 * that failed trylock_page() in shrink_page_list() was never
-		 * counted, yet it can still reach this point if its holder
-		 * unlocked it in the meantime. Letting nr_scanned wrap would
-		 * hand vmpressure() an enormous scan with nothing reclaimed,
-		 * which reads as 100% pressure and kills a process.
-		 */
-		sc->nr_scanned -= min_t(unsigned long, sc->nr_scanned,
-					hpage_nr_pages(page));
+		sc->nr_scanned -= hpage_nr_pages(page);
 	}
 
 	spin_lock_irq(&pgdat->lru_lock);
@@ -4546,12 +4494,6 @@ retry:
 	return scanned;
 }
 
-/*
- * Returns the number of pages to scan, 0 if this lruvec has nothing left to
- * reclaim, or -1 if scanning was deferred (aging is owed, or the current
- * priority is too shallow to produce a batch). The distinction matters to
- * vmpressure: "nothing left" is a genuine OOM signal, "come back later" is not.
- */
 static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc, bool can_swap,
 		unsigned long reclaimed, bool *need_aging)
 {
@@ -4565,6 +4507,7 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc, bool 
 	if (!nr_to_scan)
 		return 0;
 
+
 	if (!mem_cgroup_online(memcg))
 		priority = 0;
 	else if (sc->nr_reclaimed - reclaimed >= sc->nr_to_reclaim)
@@ -4574,7 +4517,7 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc, bool 
 
 	nr_to_scan >>= priority;
 	if (!nr_to_scan)
-		return -1;
+		return 0;
 
 	if (!*need_aging)
 		return nr_to_scan;
@@ -4585,12 +4528,12 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc, bool 
 
 	/* leave the work to lru_gen_age_node() */
 	if (current_is_kswapd())
-		return -1;
+		return 0;
 
 	if (try_to_inc_max_seq(lruvec, max_seq, sc, can_swap, false))
 		return nr_to_scan;
 
-	return min_seq[!can_swap] + MIN_NR_GENS <= max_seq ? nr_to_scan : -1;
+	return min_seq[!can_swap] + MIN_NR_GENS <= max_seq ? nr_to_scan : 0;
 }
 
 static void lru_gen_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
@@ -4620,25 +4563,12 @@ static void lru_gen_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc
 			swappiness = 0;
 
 		nr_to_scan = get_nr_to_scan(lruvec, sc, swappiness, reclaimed, &need_aging);
-		if (nr_to_scan <= 0) {
-			/*
-			 * Deferred, not exhausted: there are still reclaimable
-			 * pages here, we just chose not to touch them now. Flag
-			 * it so shrink_node() doesn't hand vmpressure a pass
-			 * with nothing scanned, which reads as 100% pressure.
-			 */
-			if (nr_to_scan < 0)
-				sc->memcgs_deferred = 1;
+		if (!nr_to_scan)
 			goto done;
-		}
 
 		delta = evict_pages(lruvec, sc, swappiness, &swapped);
-		if (!delta) {
-			/* the oldest generation is too young to evict yet */
-			if (!scanned)
-				sc->memcgs_deferred = 1;
+		if (!delta)
 			goto done;
-		}
 
 		if (sc->memcgs_avoid_swapping && swappiness < 200 && swapped)
 			break;
@@ -5320,22 +5250,6 @@ static void lru_gen_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc
 
 #endif /* CONFIG_LRU_GEN */
 
-static inline void reclaim_clear_deferred(struct scan_control *sc)
-{
-#ifdef CONFIG_LRU_GEN
-	sc->memcgs_deferred = 0;
-#endif
-}
-
-static inline bool reclaim_was_deferred(struct scan_control *sc)
-{
-#ifdef CONFIG_LRU_GEN
-	return sc->memcgs_deferred;
-#else
-	return false;
-#endif
-}
-
 /*
  * This is a basic per-node page freer.  Used by both kswapd and direct reclaim.
  */
@@ -5353,7 +5267,6 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 	bool scan_adjusted;
 
 	if (lru_gen_enabled()) {
-		*lru_pages = 0;
 		lru_gen_shrink_lruvec(lruvec, sc);
 		return;
 	}
@@ -5565,7 +5478,6 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 		};
 		unsigned long node_lru_pages = 0;
 		struct mem_cgroup *memcg;
-		bool deferred = false;
 
 		memset(&sc->nr, 0, sizeof(sc->nr));
 
@@ -5612,25 +5524,16 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 
 			reclaimed = sc->nr_reclaimed;
 			scanned = sc->nr_scanned;
-			reclaim_clear_deferred(sc);
 			shrink_node_memcg(pgdat, memcg, sc, &lru_pages);
 			node_lru_pages += lru_pages;
 
 			shrink_slab(sc->gfp_mask, pgdat->node_id, memcg,
 					sc->priority);
 
-			/*
-			 * Record the group's reclaim efficiency, unless MGLRU
-			 * deliberately declined to scan this group. A sample of
-			 * zero scanned pages is reported as maximum pressure,
-			 * and a deferred scan is not a reclaim failure.
-			 */
-			if (sc->nr_scanned - scanned || !reclaim_was_deferred(sc))
-				vmpressure(sc->gfp_mask, memcg, false,
-					   sc->nr_scanned - scanned,
-					   sc->nr_reclaimed - reclaimed, sc->order);
-			else
-				deferred = true;
+			/* Record the group's reclaim efficiency */
+			vmpressure(sc->gfp_mask, memcg, false,
+				   sc->nr_scanned - scanned,
+				   sc->nr_reclaimed - reclaimed, sc->order);
 
 			/*
 			 * Direct reclaim and kswapd have to scan all memory
@@ -5656,18 +5559,10 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 		 * by slab shrinking depends on each slab's object population,
 		 * making the cost model (i.e. scan:free) different from that
 		 * of LRU.
-		 *
-		 * Skip the sample entirely when MGLRU deferred all of the work
-		 * for this pass: vmpressure_global() turns a zero-scanned
-		 * sample into 100% pressure and also discards the samples that
-		 * a concurrent direct reclaimer has accumulated, which would
-		 * make Simple LMK kill a process on nothing more than kswapd
-		 * postponing an aging pass.
 		 */
-		if (sc->nr_scanned - nr_scanned || !deferred)
-			vmpressure(sc->gfp_mask, sc->target_mem_cgroup, true,
-				   sc->nr_scanned - nr_scanned,
-				   sc->nr_reclaimed - nr_reclaimed, sc->order);
+		vmpressure(sc->gfp_mask, sc->target_mem_cgroup, true,
+			   sc->nr_scanned - nr_scanned,
+			   sc->nr_reclaimed - nr_reclaimed, sc->order);
 
 		if (reclaim_state) {
 			sc->nr_reclaimed += reclaim_state->reclaimed_slab;
