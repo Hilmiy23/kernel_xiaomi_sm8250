@@ -55,7 +55,7 @@ jobs:
       - name: Download Neutron Clang
         run: |
           wget -O clang.tar.zst \
-            https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/30072026/neutron-clang-30072026.tar.zst
+            https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst
 
           mkdir -p clang
           tar --zstd -xf clang.tar.zst -C clang
