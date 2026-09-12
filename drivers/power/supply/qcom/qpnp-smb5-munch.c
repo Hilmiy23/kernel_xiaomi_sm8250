@@ -25,6 +25,8 @@
 #include "step-chg-jeita.h"
 #include "schgm-flash.h"
 
+#define MUNCH_MAX_FCC_UA        6000000
+
 static struct smb_params smb5_pmi632_params = {
 	.fcc			= {
 		.name   = "fast charge current",
@@ -4222,8 +4224,7 @@ static int smb5_init_hw(struct smb5 *chip)
 	if (chg->wireless_bq)
 		rc = vote(chg->dc_suspend_votable, WIRELESS_BY_USB_IN_VOTER,
 					true, 0);
-	vote(chg->fcc_votable, HW_LIMIT_VOTER,
-		chip->dt.batt_profile_fcc_ua > 0, chip->dt.batt_profile_fcc_ua);
+	vote(chg->fcc_votable, HW_LIMIT_VOTER, true, MUNCH_MAX_FCC_UA);
 	vote(chg->fv_votable, HW_LIMIT_VOTER,
 		chip->dt.batt_profile_fv_uv > 0, chip->dt.batt_profile_fv_uv);
 	vote(chg->fcc_votable,
