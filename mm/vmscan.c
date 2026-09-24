@@ -176,7 +176,7 @@ struct scan_control {
 /*
  * From 0 .. 100.  Higher means more swappy.
  */
-int vm_swappiness = 60;
+int vm_swappiness = 75;
 /*
  * The total number of pages which are beyond the high watermark within all
  * zones.
@@ -695,6 +695,9 @@ static unsigned long shrink_slab(gfp_t gfp_mask, int nid,
 {
 	unsigned long ret, freed = 0;
 	struct shrinker *shrinker;
+
+	if (task_is_critical())
+		return 0;
 
 	/*
 	 * The root memcg might be allocated even though memcg is disabled
@@ -4104,6 +4107,10 @@ void lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
 	if (spin_is_contended(pvmw->ptl))
 		return;
 
+	/* exclude special VMAs containing anon pages from COW */
+	if (pvmw->vma->vm_flags & VM_SPECIAL)
+		return;
+
 	/* Avoid taking the LRU lock under the PTL when possible. */
 	walk = current->reclaim_state ? current->reclaim_state->mm_walk : NULL;
 
@@ -4457,6 +4464,11 @@ static int isolate_pages(struct lruvec *lruvec, struct scan_control *sc, int swa
 		type = LRU_GEN_ANON;
 	else
 		type = get_type_to_scan(lruvec, swappiness, &tier);
+
+	if (task_is_critical()) {
+		type = LRU_GEN_FILE;
+		tier = get_tier_idx(lruvec, type);
+	}
 
 	for (i = !swappiness; i < ANON_AND_FILE; i++) {
 		if (tier < 0)
@@ -6031,19 +6043,6 @@ static bool allow_direct_reclaim(pg_data_t *pgdat, bool using_kswapd)
 	}
 
 	return wmark_ok;
-}
-
-#define CRITICAL_OOM_SCORE_ADJ	(-900)
-
-static __always_inline bool task_is_critical(void)
-{
-	if (current->flags & PF_KTHREAD)
-		return false;
-
-	if (unlikely(!current->signal))
-		return false;
-
-	return READ_ONCE(current->signal->oom_score_adj) <= CRITICAL_OOM_SCORE_ADJ;
 }
 
 /*
