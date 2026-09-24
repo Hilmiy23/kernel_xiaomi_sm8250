@@ -62,6 +62,20 @@ static inline bool oom_task_origin(const struct task_struct *p)
 	return p->signal->oom_flag_origin;
 }
 
+#define CRITICAL_OOM_SCORE_ADJ	(-900)
+
+static __always_inline bool task_is_critical(void)
+{
+	if (current->flags & PF_KTHREAD)
+		return false;
+
+	if (unlikely(!current->signal))
+		return false;
+
+	return READ_ONCE(current->signal->oom_score_adj) <=
+		CRITICAL_OOM_SCORE_ADJ;
+}
+
 static inline bool tsk_is_oom_victim(struct task_struct * tsk)
 {
 #ifdef CONFIG_ANDROID_SIMPLE_LMK
