@@ -578,6 +578,8 @@ static void update_cpu_hw_throttle(void)
 
 	/* Calculate the measured frequency */
 	max_freq = per_cpu(cpu_max_freq, cpu);
+	if (!max_freq)
+		goto reset_stats;
 	ns = cntpct_to_ns(htd->const_cyc);
 	freq = min(max_freq, USEC_PER_SEC * htd->cpu_cyc / ns);
 
@@ -723,13 +725,14 @@ static void update_freq_scale(int cpu, struct rq *rq, bool local_cpu)
 	 * the system timer doesn't.
 	 */
 	if (rq->cpu == cpu) {
-		if (sfd->const_cyc >= cpu_min_sample_cntpct) {
-			u64 max_freq = per_cpu(cpu_max_freq, cpu);
+		u64 max_freq = per_cpu(cpu_max_freq, cpu);
+
+		if (sfd->const_cyc >= cpu_min_sample_cntpct && max_freq) {
 			u64 freq, ns = cntpct_to_ns(sfd->const_cyc);
 
 			/* Report the measured frequency and reset the stats */
 			freq = min(max_freq, USEC_PER_SEC * sfd->cpu_cyc / ns);
-			per_cpu(arch_freq_scale, cpu) =
+			per_cpu(freq_scale, cpu) =
 				SCHED_CAPACITY_SCALE * freq / max_freq;
 			reset_sfd_data(sfd);
 		} else if (sfd->const_cyc) {
@@ -865,15 +868,6 @@ void fie_idle_exit(void)
 	fie_cpu_idle(raw_smp_processor_id(), false);
 }
 
-static void fie_tick(void)
-{
-}
-
-static struct scale_freq_data fie_sfd = {
-	.source = SCALE_FREQ_SOURCE_ARCH,
-	.set_freq_scale = fie_tick
-};
-
 static int fie_cpuhp_up(unsigned int cpu)
 {
 	struct cpu_pmu *pmu = &per_cpu(cpu_pmu_evs, cpu);
@@ -914,8 +908,6 @@ static int fie_cpuhp_up(unsigned int cpu)
 	reset_sfd_data(sfd);
 	reset_htd_data(htd);
 
-	topology_set_scale_freq_source(&fie_sfd, cpumask_of(cpu));
-
 	/* Clear the hardware throttle idle flag for this CPU */
 	set_cpu_hw_throttle_idle(cpu, false);
 	return 0;
@@ -923,8 +915,6 @@ static int fie_cpuhp_up(unsigned int cpu)
 
 static int fie_cpuhp_down(unsigned int cpu)
 {
-	topology_clear_scale_freq_source(SCALE_FREQ_SOURCE_ARCH,
-					 cpumask_of(cpu));
 	if (!per_cpu(cpu_has_amu, cpu))
 		release_perf_events(cpu);
 
@@ -945,8 +935,8 @@ static int fie_reboot(struct notifier_block *notifier, unsigned long val,
 		      void *cmd)
 {
 	/*
-	 * Disable all hooks and clear scale_freq source to prevent further PMU
-	 * register access after this. PMU registers must not be accessed after
+	 * Disable all hooks to prevent further PMU register access after this.
+	 * PMU registers must not be accessed after
 	 * kvm_reboot() finishes; attempting to do so will fault.
 	 *
 	 * This also needs to kick all CPUs to ensure that the scheduler and
@@ -957,8 +947,6 @@ static int fie_reboot(struct notifier_block *notifier, unsigned long val,
 	 * it is guaranteed that all hooks which may read PMU registers will
 	 * observe `fie_ready == false`.
 	 */
-	topology_clear_scale_freq_source(SCALE_FREQ_SOURCE_ARCH,
-					 cpu_possible_mask);
 	static_branch_disable(&fie_ready);
 	kick_all_cpus_sync();
 	cpuhp_remove_state_nocalls(cpuhp_state);
@@ -973,24 +961,14 @@ static struct notifier_block fie_reboot_nb = {
 
 static int __init fie_init(void)
 {
-	/*
-	 * Delete the arch's scale_freq_data callback to get rid of the
-	 * duplicated work by the arch's callback, since we read the same
-	 * values. This also lets the frequency invariance engine work on cores
-	 * that lack the AMU const cycles counter, since we use a workaround for
-	 * such CPUs by using cpuidle callbacks to deduct time spent in WFE/WFI,
-	 * which is good enough despite not tracking WFE/WFI usage outside of
-	 * cpuidle (such as WFE/WFI usage in __delay()).
-	 *
-	 * A new scale_freq_data callback is installed in fie_cpuhp_up().
-	 */
-	topology_clear_scale_freq_source(SCALE_FREQ_SOURCE_ARCH,
-					 cpu_possible_mask);
-
 	/* Register the CPU hotplug notifier with calls to all online CPUs */
 	cpuhp_state = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "fie",
 					fie_cpuhp_up, fie_cpuhp_down);
-	BUG_ON(cpuhp_state <= 0);
+	if (cpuhp_state <= 0) {
+		pr_err("FIE: failed to register CPU hotplug state (%d)\n",
+		       cpuhp_state);
+		return cpuhp_state;
+	}
 
 	/* Precompute arithmetic to convert between ticks and nanoseconds */
 	calc_cntpct_arith();
