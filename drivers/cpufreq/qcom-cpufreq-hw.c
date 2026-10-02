@@ -77,6 +77,7 @@ struct cpufreq_qcom {
 	unsigned long xo_rate;
 	unsigned long cpu_hw_rate;
 	unsigned long dcvsh_freq_limit;
+	unsigned int last_lmh_cap;
 	struct delayed_work freq_poll_work;
 	struct mutex dcvsh_lock;
 	struct device_attribute freq_limit_attr;
@@ -146,6 +147,7 @@ static unsigned long limits_mitigation_notify(struct cpufreq_qcom *c,
 	struct cpufreq_policy *policy;
 	u32 cpu;
 	unsigned long freq;
+	unsigned int capped_freq;
 
 	cpu = cpumask_first(&c->related_cpus);
 	policy = cpufreq_cpu_get_raw(cpu);
@@ -161,8 +163,12 @@ static unsigned long limits_mitigation_notify(struct cpufreq_qcom *c,
 			freq = policy->cpuinfo.max_freq;
 	}
 
-	fie_cpufreq_pressure(cpu, limit && policy &&
-			     freq < policy->cpuinfo.max_freq ? freq : UINT_MAX);
+	capped_freq = limit && policy && freq < policy->cpuinfo.max_freq ?
+			freq : UINT_MAX;
+	if (c->last_lmh_cap != capped_freq) {
+		c->last_lmh_cap = capped_freq;
+		fie_cpufreq_pressure(cpu, capped_freq);
+	}
 	trace_dcvsh_freq(cpumask_first(&c->related_cpus), freq);
 	c->dcvsh_freq_limit = freq;
 
@@ -683,6 +689,7 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 	c = devm_kzalloc(dev, sizeof(*c), GFP_KERNEL);
 	if (!c)
 		return -ENOMEM;
+	c->last_lmh_cap = UINT_MAX;
 
 	offsets = of_device_get_match_data(&pdev->dev);
 	if (!offsets)
