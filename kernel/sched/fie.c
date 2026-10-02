@@ -9,7 +9,7 @@
 #include <linux/perf_event.h>
 #include <linux/reboot.h>
 #include <linux/sched/topology.h>
-#include <linux/units.h>
+#include <linux/time.h>
 #include <asm/arch_timer.h>
 #include <asm/cputype.h>
 #include <asm/perf_event.h>
