@@ -17,9 +17,6 @@
 #include <asm/sysreg.h>
 #include "sched.h"
 
-#define SYS_AMEVCNTR0_CORE_EL0	(sys_reg(3, 3, 13, 4, 0))
-#define SYS_AMEVCNTR0_CONST_EL0	(sys_reg(3, 3, 13, 4, 1))
-
 /*
  * The minimum sample time required to measure the performance counters. This
  * should take into account the resolution of the system timer. At Qualcomm's
